@@ -1,17 +1,25 @@
+/**
+ * Copyright (c) 2022 Raspberry Pi (Trading) Ltd.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+ */
+
 #include <stdio.h>
 
 #include "pico/stdlib.h"
+#include "pico/cyw43_arch.h"
 
 void main(void) {
 	stdio_init_all();
-	int i = 0;
+	if (cyw43_arch_init()) {
+		printf("Wi-Fi init failed");
+		return;
+	}
 
-	gpio_init(PICO_DEFAULT_LED_PIN);
-	gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-
-	for ( ;; ) {
-		gpio_put(PICO_DEFAULT_LED_PIN, i & 1);
-		printf("Hello %d\n", i++);
+	while (true) {
+		cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+		sleep_ms(1000);
+		cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
 		sleep_ms(1000);
 	}
 }
