@@ -45,23 +45,14 @@
 
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
+#include "pico/async_context.h"
 
 #include "btstack_run_loop.h"
 #include "btstack_config.h"
 #include "btstack.h"
 #include "classic/sdp_server.h"
 
-struct bt_hid_state {
-	uint16_t buttons;
-	uint8_t lx;
-	uint8_t ly;
-	uint8_t rx;
-	uint8_t ry;
-	uint8_t l2;
-	uint8_t r2;
-	uint8_t hat;
-	uint8_t pad;
-};
+#include "bt_hid.h"
 
 #define MAX_ATTRIBUTE_VALUE_SIZE 512
 
@@ -113,8 +104,9 @@ const struct bt_hid_state default_state = {
 	.l2 = 0x80,
 	.r2 = 0x80,
 	.hat = 0x8,
-	.pad = 0x0,
 };
+
+struct bt_hid_state latest;
 
 struct __attribute__((packed)) input_report_17 {
 	uint8_t report_id;
@@ -149,7 +141,10 @@ static void hid_host_handle_interrupt_report(const uint8_t *packet, uint16_t pac
 	//printf_hexdump(packet, packet_len);
 
 	struct input_report_17 *report = (struct input_report_17 *)&packet[1];
-	struct bt_hid_state state = {
+
+	// Note: This assumes that we're protected by async_context's
+	// single-threaded-ness
+	latest = (struct bt_hid_state){
 		// Somewhat arbitrary packing of the buttons into a single 16-bit word
 		.buttons = ((report->buttons[0] & 0xf0) << 8) | ((report->buttons[2] & 0x3) << 8) | (report->buttons[1]),
 
@@ -166,23 +161,22 @@ static void hid_host_handle_interrupt_report(const uint8_t *packet, uint16_t pac
 	// TODO: Parse out battery, touchpad, sixaxis, timestamp, temperature(?!)
 	// Sensors will also need calibration
 
-	if (memcmp(&state, &last_state, sizeof(state))) {
-		printf("buttons: %04x, l: %d,%d, r: %d,%d, l2,r2: %d,%d hat: %d\n",
-				state.buttons, state.lx, state.ly, state.rx, state.ry,
-				state.l2, state.r2, state.hat);
-		memcpy(&last_state, &state, sizeof(state));
-	}
+}
 
-	//xQueueSend(task_params->state_queue, &state, portMAX_DELAY);
+void bt_hid_get_latest(struct bt_hid_state *dst)
+{
+	async_context_t *context = cyw43_arch_async_context();
+	async_context_acquire_lock_blocking(context);
+	memcpy(dst, &latest, sizeof(*dst));
+	async_context_release_lock(context);
 }
 
 static void bt_hid_disconnected(bd_addr_t addr)
 {
 	hid_host_cid = 0;
 	hid_host_descriptor_available = false;
-	//gap_drop_link_key_for_bd_addr(addr);
 
-	//xQueueSend(task_params->state_queue, &default_state, portMAX_DELAY);
+	memcpy(&latest, &default_state, sizeof(latest));
 }
 
 static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
