@@ -1,5 +1,6 @@
 add_executable(bt_hid
 	main.c
+	bt_hid.c
 )
 
 pico_enable_stdio_uart(bt_hid 1)
@@ -15,6 +16,7 @@ target_link_libraries(bt_hid
         pico_btstack_classic
         pico_btstack_ble
         pico_btstack_cyw43
+	pico_multicore
 )
 
 pico_add_extra_outputs(bt_hid)
