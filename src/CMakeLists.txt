@@ -1,16 +1,16 @@
-add_executable(bt_hid
+add_executable(picow_ds4
 	main.c
 	bt_hid.c
 )
 
-pico_enable_stdio_uart(bt_hid 1)
-pico_enable_stdio_semihosting(bt_hid 0)
+pico_enable_stdio_uart(picow_ds4 1)
+pico_enable_stdio_semihosting(picow_ds4 0)
 
-target_include_directories(bt_hid PRIVATE
+target_include_directories(picow_ds4 PRIVATE
 	${CMAKE_CURRENT_LIST_DIR}
 )
 
-target_link_libraries(bt_hid
+target_link_libraries(picow_ds4
 	pico_stdlib
 	pico_cyw43_arch_none
         pico_btstack_classic
@@ -19,4 +19,4 @@ target_link_libraries(bt_hid
 	pico_multicore
 )
 
-pico_add_extra_outputs(bt_hid)
+pico_add_extra_outputs(picow_ds4)
