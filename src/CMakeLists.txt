@@ -1,8 +1,3 @@
-set(BTSTACK_ROOT ${PICO_SDK_PATH}/lib/btstack)
-set(BTSTACK_EXAMPLE_PATH ${BTSTACK_ROOT}/example)
-set(BTSTACK_3RD_PARTY_PATH ${BTSTACK_ROOT}/3rd-party)
-set(BT_EXAMPLE_COMMON_DIR "${CMAKE_CURRENT_LIST_DIR}")
-
 add_executable(bt_hid
 	main.c
 )
