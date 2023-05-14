@@ -59,7 +59,9 @@
 // SN30 Pro
 //static const char * remote_addr_string = "E4:17:D8:EE:73:0E";
 // Real DS4
-static const char * remote_addr_string = "00:22:68:DB:D3:66";
+//static const char * remote_addr_string = "00:22:68:DB:D3:66";
+// Knockoff DS4
+static const char * remote_addr_string = "A5:15:66:8E:91:3B";
 
 static bd_addr_t remote_addr;
 static bd_addr_t connected_addr;
