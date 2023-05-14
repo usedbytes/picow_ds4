@@ -1,23 +1,8 @@
-/**
- * Copyright (c) 2022 Raspberry Pi (Trading) Ltd.
- *
- * SPDX-License-Identifier: BSD-3-Clause
- */
-
-#include <stdio.h>
-
-#include "pico/stdlib.h"
-#include "pico/cyw43_arch.h"
-
-// ===========================================================================
-// ===========================================================================
-// ===========================================================================
-
 /*
  * Derived from the btstack hid_host_demo:
  * Copyright (C) 2017 BlueKitchen GmbH
  *
- * Modifications Copyright (C) 2021 Brian Starkey <stark3y@gmail.com>
+ * Modifications Copyright (C) 2021-2023 Brian Starkey <stark3y@gmail.com>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -52,13 +37,19 @@
  * contact@bluekitchen-gmbh.com
  *
  */
+
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+#include "pico/stdlib.h"
+#include "pico/cyw43_arch.h"
 
 #include "btstack_run_loop.h"
 #include "btstack_config.h"
 #include "btstack.h"
+#include "classic/sdp_server.h"
 
 #define BTN_BIT_A       0
 #define BTN_BIT_B       1
@@ -81,22 +72,20 @@ struct bt_hid_state {
 	uint8_t ly;
 	uint8_t rx;
 	uint8_t ry;
+	uint8_t l2;
+	uint8_t r2;
 	uint8_t hat;
 	uint8_t pad;
 };
 
-struct bt_hid_task_params {
-	//QueueHandle_t state_queue;
-};
 
-#define MAX_ATTRIBUTE_VALUE_SIZE 300
+
+#define MAX_ATTRIBUTE_VALUE_SIZE 1024
 
 // SN30 Pro
 //static const char * remote_addr_string = "E4:17:D8:EE:73:0E";
 // Real DS4
 static const char * remote_addr_string = "00:22:68:DB:D3:66";
-
-static struct bt_hid_task_params bt_hid_task_params;
 
 static bd_addr_t remote_addr;
 static bd_addr_t connected_addr;
@@ -115,6 +104,8 @@ static void hid_host_setup(void){
 	// Initialize L2CAP
 	l2cap_init();
 
+	sdp_init();
+
 	// Initialize HID Host
 	hid_host_init(hid_descriptor_storage, sizeof(hid_descriptor_storage));
 	hid_host_register_packet_handler(packet_handler);
@@ -130,150 +121,73 @@ static void hid_host_setup(void){
 	hci_add_event_handler(&hci_event_callback_registration);
 }
 
-/*
- * Usage page: 0x1, 0x39, 0xf       HAT
- * Usage page: 0x1, 0x30, 0x80      X (Lx)
- * Usage page: 0x1, 0x31, 0x80      Y (Ly)
- * Usage page: 0x1, 0x32, 0x80      Z (Rx)
- * Usage page: 0x1, 0x35, 0x80      Rz (Ry)
- * Usage page: 0x2, 0xc4, 0x0       Accelerator (R2)
- * Usage page: 0x2, 0xc5, 0x0       Brake (L2)
- * Usage page: 0x9, 0x1, 0x0        A (Circle)
- * Usage page: 0x9, 0x2, 0x0        B (Cross)
- * Usage page: 0x9, 0x3, 0x0
- * Usage page: 0x9, 0x4, 0x0        X (Triangle)
- * Usage page: 0x9, 0x5, 0x0        Y (Square)
- * Usage page: 0x9, 0x6, 0x0
- * Usage page: 0x9, 0x7, 0x0        L1
- * Usage page: 0x9, 0x8, 0x0        R1
- * Usage page: 0x9, 0x9, 0x0
- * Usage page: 0x9, 0xa, 0x0
- * Usage page: 0x9, 0xb, 0x0        Select
- * Usage page: 0x9, 0xc, 0x0        Start
- * Usage page: 0x9, 0xd, 0x0        Heart
- * Usage page: 0x9, 0xe, 0x0        L3
- * Usage page: 0x9, 0xf, 0x0        R3
- * Usage page: 0x9, 0x10, 0x0
-*/
-#define USAGE_PAGE_DESKTOP  0x1
-#define USAGE_PAGE_SIM      0x2
-#define USAGE_PAGE_BUTTON   0x9
-
-#define DESKTOP_USAGE_HAT 0x39
-#define DESKTOP_USAGE_LX  0x30
-#define DESKTOP_USAGE_LY  0x31
-#define DESKTOP_USAGE_RX  0x32
-#define DESKTOP_USAGE_RY  0x35
-#define SIM_USAGE_R2      0xc4
-#define SIM_USAGE_L2      0xc5
-
 const struct bt_hid_state default_state = {
 	.buttons = 0,
 	.lx = 0x80,
 	.ly = 0x80,
 	.rx = 0x80,
 	.ry = 0x80,
-	.hat = 0xf,
+	.l2 = 0x80,
+	.r2 = 0x80,
+	.hat = 0x8,
 	.pad = 0x0,
 };
 
-static void hid_host_handle_interrupt_report(const uint8_t * report, uint16_t report_len){
-	// check if HID Input Report
-	if (report_len < 1) {
+struct __attribute__((packed)) input_report_17 {
+	uint8_t report_id;
+	uint8_t pad[2];
+
+	uint8_t lx, ly;
+	uint8_t rx, ry;
+	uint8_t buttons[3];
+	uint8_t l2, r2;
+
+	uint16_t timestamp;
+	uint16_t temperature;
+	uint16_t gyro[3];
+	uint16_t accel[3];
+	uint8_t pad2[5];
+	uint8_t status[2];
+	uint8_t pad3;
+};
+
+static void hid_host_handle_interrupt_report(const uint8_t *packet, uint16_t packet_len){
+	static struct bt_hid_state last_state = { 0 };
+
+	// Only interested in report_id 0x11
+	if (packet_len < sizeof(struct input_report_17) + 1) {
 		return;
 	}
 
-	if (*report != 0xa1) {
+	if ((packet[0] != 0xa1) || (packet[1] != 0x11)) {
 		return;
 	}
 
-	report++;
-	report_len--;
+	//printf_hexdump(packet, packet_len);
 
-	btstack_hid_parser_t parser;
-	btstack_hid_parser_init(&parser,
-			hid_descriptor_storage_get_descriptor_data(hid_host_cid),
-			hid_descriptor_storage_get_descriptor_len(hid_host_cid),
-			HID_REPORT_TYPE_INPUT, report, report_len);
+	struct input_report_17 *report = (struct input_report_17 *)&packet[1];
+	struct bt_hid_state state = {
+		// Somewhat arbitrary packing of the buttons into a single 16-bit word
+		.buttons = ((report->buttons[0] & 0xf0) << 8) | ((report->buttons[2] & 0x3) << 8) | (report->buttons[1]),
 
-	struct bt_hid_state state = { 0 };
+		.lx = report->lx,
+		.ly = report->ly,
+		.rx = report->rx,
+		.ry = report->ry,
+		.l2 = report->l2,
+		.r2 = report->r2,
 
-	while (btstack_hid_parser_has_more(&parser)){
-		uint16_t usage_page;
-		uint16_t usage;
-		int32_t  value;
-		btstack_hid_parser_get_field(&parser, &usage_page, &usage, &value);
+		.hat = (report->buttons[0] & 0xf),
+	};
 
-		//printf("Page: 0x%x, Usage: 0x%x, Value: 0x%x\n", usage_page, usage, value);
+	// TODO: Parse out battery, touchpad, sixaxis, timestamp, temperature(?!)
+	// Sensors will also need calibration
 
-		switch (usage_page) {
-		case USAGE_PAGE_DESKTOP:
-			switch (usage) {
-			case DESKTOP_USAGE_HAT:
-				state.hat = value;
-				break;
-			case DESKTOP_USAGE_LX:
-				state.lx = value;
-				break;
-			case DESKTOP_USAGE_LY:
-				state.ly = value;
-				break;
-			case DESKTOP_USAGE_RX:
-				state.rx = value;
-				break;
-			case DESKTOP_USAGE_RY:
-				state.ry = value;
-				break;
-			}
-			break;
-		case USAGE_PAGE_SIM:
-			switch (usage) {
-			case SIM_USAGE_L2:
-				state.buttons |= (value ? (1 << BTN_BIT_L2) : 0);
-				break;
-			case SIM_USAGE_R2:
-				state.buttons |= (value ? (1 << BTN_BIT_R2) : 0);
-				break;
-			}
-			break;
-		case USAGE_PAGE_BUTTON:
-			switch (usage) {
-			case 0x1:
-				state.buttons |= (value ? (1 << BTN_BIT_A) : 0);
-				break;
-			case 0x2:
-				state.buttons |= (value ? (1 << BTN_BIT_B) : 0);
-				break;
-			case 0x4:
-				state.buttons |= (value ? (1 << BTN_BIT_X) : 0);
-				break;
-			case 0x5:
-				state.buttons |= (value ? (1 << BTN_BIT_Y) : 0);
-				break;
-			case 0x7:
-				state.buttons |= (value ? (1 << BTN_BIT_L1) : 0);
-				break;
-			case 0x8:
-				state.buttons |= (value ? (1 << BTN_BIT_R1) : 0);
-				break;
-			case 0xb:
-				state.buttons |= (value ? (1 << BTN_BIT_SELECT) : 0);
-				break;
-			case 0xc:
-				state.buttons |= (value ? (1 << BTN_BIT_START) : 0);
-				break;
-			case 0xd:
-				state.buttons |= (value ? (1 << BTN_BIT_HEART) : 0);
-				break;
-			case 0xe:
-				state.buttons |= (value ? (1 << BTN_BIT_L3) : 0);
-				break;
-			case 0xf:
-				state.buttons |= (value ? (1 << BTN_BIT_R3) : 0);
-				break;
-			}
-			break;
-		}
+	if (memcmp(&state, &last_state, sizeof(state))) {
+		printf("buttons: %04x, l: %d,%d, r: %d,%d, l2,r2: %d,%d hat: %d\n",
+				state.buttons, state.lx, state.ly, state.rx, state.ry,
+				state.l2, state.r2, state.hat);
+		memcpy(&last_state, &state, sizeof(state));
 	}
 
 	//xQueueSend(task_params->state_queue, &state, portMAX_DELAY);
@@ -283,7 +197,7 @@ static void bt_hid_disconnected(bd_addr_t addr)
 {
 	hid_host_cid = 0;
 	hid_host_descriptor_available = false;
-	gap_drop_link_key_for_bd_addr(addr);
+	//gap_drop_link_key_for_bd_addr(addr);
 
 	//xQueueSend(task_params->state_queue, &default_state, portMAX_DELAY);
 }
@@ -297,6 +211,7 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 	uint8_t   hid_event;
 	bd_addr_t event_addr;
 	uint8_t   status;
+	uint8_t reason;
 
 	if (packet_type != HCI_EVENT_PACKET) {
 		return;
@@ -307,135 +222,158 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 	case BTSTACK_EVENT_STATE:
 		// On boot, we try a manual connection
 		if (btstack_event_state_get_state(packet) == HCI_STATE_WORKING){
-			printf("Starting hid_host_connect (%s)", bd_addr_to_str(remote_addr));
+			printf("Starting hid_host_connect (%s)\n", bd_addr_to_str(remote_addr));
 			status = hid_host_connect(remote_addr, hid_host_report_mode, &hid_host_cid);
 			if (status != ERROR_CODE_SUCCESS){
-				printf("hid_host_connect command failed: 0x%02x", status);
+				printf("hid_host_connect command failed: 0x%02x\n", status);
 			}
 		}
 		break;
+	case HCI_EVENT_CONNECTION_COMPLETE:
+		status = hci_event_connection_complete_get_status(packet);
+		printf("Connection complete: %x\n", status);
+		break;
+	case HCI_EVENT_DISCONNECTION_COMPLETE:
+		status = hci_event_disconnection_complete_get_status(packet);
+		reason = hci_event_disconnection_complete_get_reason(packet);
+		printf("Disconnection complete: status: %x, reason: %x\n", status, reason);
+		break;
+	case HCI_EVENT_MAX_SLOTS_CHANGED:
+		status = hci_event_max_slots_changed_get_lmp_max_slots(packet);
+		printf("Max slots changed: %x\n", status);
+		break;
 	case HCI_EVENT_PIN_CODE_REQUEST:
-		printf("Pin code request. Responding '0000'");
+		printf("Pin code request. Responding '0000'\n");
 		hci_event_pin_code_request_get_bd_addr(packet, event_addr);
 		gap_pin_code_response(event_addr, "0000");
 		break;
 	case HCI_EVENT_USER_CONFIRMATION_REQUEST:
-		printf("SSP User Confirmation Request: %d", little_endian_read_32(packet, 8));
+		printf("SSP User Confirmation Request: %d\n", little_endian_read_32(packet, 8));
 		break;
 	case HCI_EVENT_HID_META:
 		hid_event = hci_event_hid_meta_get_subevent_code(packet);
 		switch (hid_event) {
 		case HID_SUBEVENT_INCOMING_CONNECTION:
 			hid_subevent_incoming_connection_get_address(packet, event_addr);
-			printf("Accepting connection from %s", bd_addr_to_str(event_addr));
+			printf("Accepting connection from %s\n", bd_addr_to_str(event_addr));
 			hid_host_accept_connection(hid_subevent_incoming_connection_get_hid_cid(packet), hid_host_report_mode);
 			break;
 		case HID_SUBEVENT_CONNECTION_OPENED:
 			status = hid_subevent_connection_opened_get_status(packet);
 			hid_subevent_connection_opened_get_bd_addr(packet, event_addr);
 			if (status != ERROR_CODE_SUCCESS) {
-				printf("Connection to %s failed: 0x%02x", bd_addr_to_str(event_addr), status);
+				printf("Connection to %s failed: 0x%02x\n", bd_addr_to_str(event_addr), status);
 				bt_hid_disconnected(event_addr);
 				return;
 			}
 			hid_host_descriptor_available = false;
 			hid_host_cid = hid_subevent_connection_opened_get_hid_cid(packet);
-			printf("Connected to %s", bd_addr_to_str(event_addr));
+			printf("Connected to %s\n", bd_addr_to_str(event_addr));
 			bd_addr_copy(connected_addr, event_addr);
 			break;
 		case HID_SUBEVENT_DESCRIPTOR_AVAILABLE:
 			status = hid_subevent_descriptor_available_get_status(packet);
 			if (status == ERROR_CODE_SUCCESS){
 				hid_host_descriptor_available = true;
-				printf("HID descriptor available");
+
+				uint16_t dlen = hid_descriptor_storage_get_descriptor_len(hid_host_cid);
+				printf("HID descriptor available. Len: %d\n", dlen);
+
+				// Send FEATURE 0x05, to switch the controller to "full" report mode
+				hid_host_send_get_report(hid_host_cid, HID_REPORT_TYPE_FEATURE, 0x05);
 			} else {
-				printf("Couldn't process HID Descriptor");
+				printf("Couldn't process HID Descriptor, status: %d\n", status);
 			}
 			break;
 		case HID_SUBEVENT_REPORT:
 			if (hid_host_descriptor_available){
 				hid_host_handle_interrupt_report(hid_subevent_report_get_report(packet), hid_subevent_report_get_report_len(packet));
 			} else {
+				printf("No hid host descriptor available\n");
 				printf_hexdump(hid_subevent_report_get_report(packet), hid_subevent_report_get_report_len(packet));
 			}
 			break;
 		case HID_SUBEVENT_SET_PROTOCOL_RESPONSE:
 			status = hid_subevent_set_protocol_response_get_handshake_status(packet);
 			if (status != HID_HANDSHAKE_PARAM_TYPE_SUCCESSFUL){
-				printf("Protocol handshake error: 0x%02x", status);
+				printf("Protocol handshake error: 0x%02x\n", status);
 				break;
 			}
 			hid_protocol_mode_t proto = hid_subevent_set_protocol_response_get_protocol_mode(packet);
 			switch (proto) {
 			case HID_PROTOCOL_MODE_BOOT:
-				printf("Negotiated protocol: BOOT");
+				printf("Negotiated protocol: BOOT\n");
 				break;
 			case HID_PROTOCOL_MODE_REPORT:
-				printf("Negotiated protocol: REPORT");
+				printf("Negotiated protocol: REPORT\n");
 				break;
 			default:
-				printf("Negotiated unknown protocol: 0x%x", proto);
+				printf("Negotiated unknown protocol: 0x%x\n", proto);
 				break;
 			}
 			break;
 		case HID_SUBEVENT_CONNECTION_CLOSED:
-			printf("HID connection closed: %s", bd_addr_to_str(connected_addr));
+			printf("HID connection closed: %s\n", bd_addr_to_str(connected_addr));
 			bt_hid_disconnected(connected_addr);
 			break;
+		case HID_SUBEVENT_GET_REPORT_RESPONSE:
+			{
+				status = hid_subevent_get_report_response_get_handshake_status(packet);
+				uint16_t dlen =  hid_subevent_get_report_response_get_report_len(packet);
+				printf("GET_REPORT response. status: %d, len: %d\n", status, dlen);
+			}
+			break;
 		default:
-			printf("Unknown HID subevent: 0x%x", hid_event);
+			printf("Unknown HID subevent: 0x%x\n", hid_event);
 			break;
 		}
 		break;
 	default:
-		printf("Unknown HCI event: 0x%x", event);
+		//printf("Unknown HCI event: 0x%x\n", event);
 		break;
 	}
 }
 
-void bt_hid_task()
+#define BLINK_MS 250
+static btstack_timer_source_t blink_timer;
+static void blink_handler(btstack_timer_source_t *ts)
 {
-	// Looks like btstack doesn't give us a way to pass this to the
-	// packet handler without a global.
-	//task_params = &bt_hid_task_params;
+	static bool on = 0;
 
-	//btstack_init();
+	if (hid_host_cid != 0) {
+		on = true;
+	} else {
+		on = !on;
+	}
+
+	cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, !!on);
+
+	btstack_run_loop_set_timer(&blink_timer, BLINK_MS);
+	btstack_run_loop_add_timer(&blink_timer);
+}
+
+void main(void) {
+	stdio_init_all();
+
+	sleep_ms(1000);
+	printf("Hello\n");
+
+	if (cyw43_arch_init()) {
+		printf("Wi-Fi init failed\n");
+		return;
+	}
+
+	gap_set_security_level(LEVEL_2);
+
+	blink_timer.process = &blink_handler;
+	btstack_run_loop_set_timer(&blink_timer, BLINK_MS);
+	btstack_run_loop_add_timer(&blink_timer);
 
 	hid_host_setup();
-
 	sscanf_bd_addr(remote_addr_string, remote_addr);
 	bt_hid_disconnected(remote_addr);
 
 	hci_power_control(HCI_POWER_ON);
 
 	btstack_run_loop_execute();
-
-	// Run loop should never return, but just incase
-	//vTaskDelete(NULL);
-}
-
-// ===========================================================================
-// ===========================================================================
-// ===========================================================================
-
-void main(void) {
-	stdio_init_all();
-
-	sleep_ms(1000);
-	printf("Hello over uart\n");
-
-	if (cyw43_arch_init()) {
-		printf("Wi-Fi init failed");
-		return;
-	}
-
-	// main()
-	bt_hid_task();
-
-	while (true) {
-		cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-		sleep_ms(1000);
-		cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
-		sleep_ms(1000);
-	}
 }
