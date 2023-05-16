@@ -61,7 +61,9 @@
 // Real DS4
 //static const char * remote_addr_string = "00:22:68:DB:D3:66";
 // Knockoff DS4
-static const char * remote_addr_string = "A5:15:66:8E:91:3B";
+//static const char * remote_addr_string = "A5:15:66:8E:91:3B";
+// Brian C Knockoff DS4
+static const char * remote_addr_string = "8C:41:F2:D0:32:43";
 
 static bd_addr_t remote_addr;
 static bd_addr_t connected_addr;

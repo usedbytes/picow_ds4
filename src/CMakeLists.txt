@@ -11,6 +11,8 @@ target_include_directories(picow_ds4 PRIVATE
 )
 
 target_link_libraries(picow_ds4
+	hardware_pwm
+	hardware_gpio
 	pico_stdlib
 	pico_cyw43_arch_none
         pico_btstack_classic
