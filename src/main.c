@@ -139,8 +139,9 @@ void main(void) {
 
 	struct bt_hid_state state;
 	for ( ;; ) {
-		sleep_ms(20);
+		sleep_ms(2000);
 		bt_hid_get_latest(&state);
+		/*
 		printf("buttons: %04x, l: %d,%d, r: %d,%d, l2,r2: %d,%d hat: %d\n",
 				state.buttons, state.lx, state.ly, state.rx, state.ry,
 				state.l2, state.r2, state.hat);
@@ -149,5 +150,6 @@ void main(void) {
 		int8_t linear = clamp8(-(state.ly - 128) * speed_scale);
 		int8_t rot = clamp8(-(state.rx - 128));
 		chassis_set(&chassis, linear, rot);
+		*/
 	}
 }

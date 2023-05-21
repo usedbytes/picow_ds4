@@ -55,6 +55,9 @@
 #include "bt_hid.h"
 
 #define MAX_ATTRIBUTE_VALUE_SIZE 512
+#define INQUIRY_INTERVAL 5
+
+#define DS4_CLASS_OF_DEVICE 0x2508
 
 // SN30 Pro
 //static const char * remote_addr_string = "E4:17:D8:EE:73:0E";
@@ -63,7 +66,7 @@
 // Knockoff DS4
 //static const char * remote_addr_string = "A5:15:66:8E:91:3B";
 // Brian C Knockoff DS4
-static const char * remote_addr_string = "8C:41:F2:D0:32:43";
+//static const char * remote_addr_string = "8C:41:F2:D0:32:43";
 
 static bd_addr_t remote_addr;
 static bd_addr_t connected_addr;
@@ -77,6 +80,17 @@ static bool     hid_host_descriptor_available = false;
 static hid_protocol_mode_t hid_host_report_mode = HID_PROTOCOL_MODE_REPORT;
 
 static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
+
+bool connected = false;
+
+enum connection_state {
+	CONN_STATE_DISCONNECTED = 0,
+	CONN_STATE_SCANNING,
+	CONN_STATE_CONNECTING,
+	CONN_STATE_CONNECTED,
+};
+
+enum connection_state conn_state = CONN_STATE_DISCONNECTED;
 
 static void hid_host_setup(void){
 	// Initialize L2CAP
@@ -93,6 +107,8 @@ static void hid_host_setup(void){
 
 	// try to become master on incoming connections
 	hci_set_master_slave_policy(HCI_ROLE_MASTER);
+
+	hci_set_inquiry_mode(INQUIRY_MODE_RSSI_AND_EIR);
 
 	// register for HCI events
 	hci_event_callback_registration.callback = &packet_handler;
@@ -175,12 +191,23 @@ void bt_hid_get_latest(struct bt_hid_state *dst)
 	async_context_release_lock(context);
 }
 
-static void bt_hid_disconnected(bd_addr_t addr)
+static void bt_hid_disconnected()
 {
 	hid_host_cid = 0;
 	hid_host_descriptor_available = false;
-
 	memcpy(&latest, &default_state, sizeof(latest));
+	conn_state = CONN_STATE_DISCONNECTED;
+}
+
+static void connect_to(bd_addr_t addr)
+{
+	uint8_t   status;
+	printf("Starting hid_host_connect (%s)\n", bd_addr_to_str(addr));
+	gap_drop_link_key_for_bd_addr(addr);
+	status = hid_host_connect(addr, hid_host_report_mode, &hid_host_cid);
+	if (status != ERROR_CODE_SUCCESS){
+		printf("hid_host_connect command failed: 0x%02x\n", status);
+	}
 }
 
 static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
@@ -193,6 +220,7 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 	bd_addr_t event_addr;
 	uint8_t   status;
 	uint8_t reason;
+	uint32_t class_of_device;
 
 	if (packet_type != HCI_EVENT_PACKET) {
 		return;
@@ -203,13 +231,30 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 	case BTSTACK_EVENT_STATE:
 		// On boot, we try a manual connection
 		if (btstack_event_state_get_state(packet) == HCI_STATE_WORKING){
-			printf("Starting hid_host_connect (%s)\n", bd_addr_to_str(remote_addr));
-			status = hid_host_connect(remote_addr, hid_host_report_mode, &hid_host_cid);
-			if (status != ERROR_CODE_SUCCESS){
-				printf("hid_host_connect command failed: 0x%02x\n", status);
-			}
+			printf("Inquiry start...\n");
+			conn_state = CONN_STATE_SCANNING;
+			gap_inquiry_start(INQUIRY_INTERVAL);
 		}
 		break;
+	case GAP_EVENT_INQUIRY_RESULT:
+	    gap_event_inquiry_result_get_bd_addr(packet, event_addr);
+	    class_of_device = gap_event_inquiry_result_get_class_of_device(packet);
+
+	    printf("Device found: %s with CoD: 0x%06x\n",  bd_addr_to_str(event_addr), class_of_device);
+	    if (class_of_device == 0x2508) {
+		bd_addr_copy(remote_addr, event_addr);
+		conn_state = CONN_STATE_CONNECTING;
+		connect_to(remote_addr);
+		gap_inquiry_stop();
+	    }
+	    break;
+	case GAP_EVENT_INQUIRY_COMPLETE:
+	    printf("Inquiry complete\n");
+	    if ((conn_state == CONN_STATE_SCANNING) || (conn_state == CONN_STATE_DISCONNECTED)) {
+		    printf("Inquiry start...\n");
+		    gap_inquiry_start(INQUIRY_INTERVAL);
+	    }
+	    break;
 	case HCI_EVENT_CONNECTION_COMPLETE:
 		status = hci_event_connection_complete_get_status(packet);
 		printf("Connection complete: %x\n", status);
@@ -244,12 +289,13 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 			hid_subevent_connection_opened_get_bd_addr(packet, event_addr);
 			if (status != ERROR_CODE_SUCCESS) {
 				printf("Connection to %s failed: 0x%02x\n", bd_addr_to_str(event_addr), status);
-				bt_hid_disconnected(event_addr);
+				bt_hid_disconnected();
 				return;
 			}
 			hid_host_descriptor_available = false;
 			hid_host_cid = hid_subevent_connection_opened_get_hid_cid(packet);
 			printf("Connected to %s\n", bd_addr_to_str(event_addr));
+			conn_state = CONN_STATE_CONNECTED;
 			bd_addr_copy(connected_addr, event_addr);
 			break;
 		case HID_SUBEVENT_DESCRIPTOR_AVAILABLE:
@@ -295,7 +341,7 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 			break;
 		case HID_SUBEVENT_CONNECTION_CLOSED:
 			printf("HID connection closed: %s\n", bd_addr_to_str(connected_addr));
-			bt_hid_disconnected(connected_addr);
+			bt_hid_disconnected();
 			break;
 		case HID_SUBEVENT_GET_REPORT_RESPONSE:
 			{
@@ -345,9 +391,10 @@ void bt_main(void) {
 	btstack_run_loop_set_timer(&blink_timer, BLINK_MS);
 	btstack_run_loop_add_timer(&blink_timer);
 
+	conn_state = CONN_STATE_DISCONNECTED;
 	hid_host_setup();
-	sscanf_bd_addr(remote_addr_string, remote_addr);
-	bt_hid_disconnected(remote_addr);
+	//sscanf_bd_addr(remote_addr_string, remote_addr);
+	bt_hid_disconnected();
 
 	hci_power_control(HCI_POWER_ON);
 
