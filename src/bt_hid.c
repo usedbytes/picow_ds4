@@ -58,6 +58,7 @@
 #define INQUIRY_INTERVAL 5
 
 #define DS4_CLASS_OF_DEVICE 0x2508
+#define FAKE_DS4_CLASS_OF_DEVICE 0x508
 
 // SN30 Pro
 //static const char * remote_addr_string = "E4:17:D8:EE:73:0E";
@@ -241,7 +242,8 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 	    class_of_device = gap_event_inquiry_result_get_class_of_device(packet);
 
 	    printf("Device found: %s with CoD: 0x%06x\n",  bd_addr_to_str(event_addr), class_of_device);
-	    if (class_of_device == 0x2508) {
+	    if ((class_of_device == DS4_CLASS_OF_DEVICE) ||
+		(class_of_device == FAKE_DS4_CLASS_OF_DEVICE)) {
 		bd_addr_copy(remote_addr, event_addr);
 		conn_state = CONN_STATE_CONNECTING;
 		connect_to(remote_addr);
@@ -290,6 +292,9 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 			if (status != ERROR_CODE_SUCCESS) {
 				printf("Connection to %s failed: 0x%02x\n", bd_addr_to_str(event_addr), status);
 				bt_hid_disconnected();
+
+				printf("Inquiry start...\n");
+				gap_inquiry_start(INQUIRY_INTERVAL);
 				return;
 			}
 			hid_host_descriptor_available = false;
@@ -342,6 +347,9 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
 		case HID_SUBEVENT_CONNECTION_CLOSED:
 			printf("HID connection closed: %s\n", bd_addr_to_str(connected_addr));
 			bt_hid_disconnected();
+
+			printf("Inquiry start...\n");
+			gap_inquiry_start(INQUIRY_INTERVAL);
 			break;
 		case HID_SUBEVENT_GET_REPORT_RESPONSE:
 			{
